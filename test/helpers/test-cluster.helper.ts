@@ -2,7 +2,7 @@ import "reflect-metadata";
 import { PurgeQueueCommand } from "@aws-sdk/client-sqs";
 import { MikroORM } from "@mikro-orm/core";
 import { EntityManager } from "@mikro-orm/postgresql";
-import { INestApplication } from "@nestjs/common";
+import { INestApplication, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "../../src/app.module";
 import { ReconcileWalletUseCase } from "../../src/application/use-cases/reconcile-wallet.use-case";
@@ -35,6 +35,13 @@ export async function createTestAppInstance(port = 0): Promise<TestAppInstance> 
   const app = await NestFactory.create(AppModule, {
     logger: false,
   });
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+    }),
+  );
 
   const orm = app.get(MikroORM);
   await orm.getMigrator().up();
