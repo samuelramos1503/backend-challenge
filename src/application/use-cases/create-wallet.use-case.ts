@@ -72,6 +72,7 @@ export class CreateWalletUseCase {
         });
 
         await walletRepo.save(wallet);
+        await txEm.flush();
 
         if (initialMoney.isPositive()) {
           const openingTxId = uuidv7();

@@ -228,3 +228,34 @@ Todas as invariantes críticas estão protegidas diretamente no DDL do PostgreSQ
    - *Evolução*: em altíssima vazão (> 10k eventos/s), substituir o polling por **Debezium (PostgreSQL Logical Replication WAL)** lendo a tabela `outbox_messages` com latência sub-10ms e zero carga de `SELECT` no primário.
 3. **Crescimento Infinito de `wallet_ledger_entries` e `outbox_messages`**:
    - *Evolução*: particionamento declarativo do PostgreSQL (`PARTITION BY RANGE (created_at)`) mensal para `wallet_ledger_entries`, e expurgo/arquivamento de registros `outbox_messages` já publicados (`published_at IS NOT NULL`) após 7 dias.
+
+---
+
+## 10. Experimento de Teste de Carga (`bun run test:load`) — Seção 14
+
+### 10.1 Ambiente e Metodologia
+- **Ambiente**: Windows 11 + WSL 2 (Docker Engine 29.9.2), containers reais `postgres:16-alpine` e `localstack/localstack:3.7`, runtime **Bun 1.4.4**.
+- **Metodologia**:
+  - Abertura de **20 carteiras distintas** com saldo inicial de `1000.00 BRL` cada;
+  - Disparo em rajada simultânea (`Promise.all`) de **400 transações financeiras** (`20` operações concorrentes por carteira, alternando `BET` e `WIN` de `10.00 BRL`), gerando contenção real de lock por carteira e concorrência entre carteiras distintas;
+  - Drenagem do Transactional Outbox para o LocalStack SQS e verificação final da invariante `wallet.balance == saldo reconstruído pelo ledger` nas 20 carteiras.
+
+### 10.2 Resultados Obtidos
+
+| Métrica | Valor Observado |
+|---|---|
+| **Total de Operações Financeiras** | `400` transações (em 20 carteiras simultâneas) |
+| **Duração Total da Rajada** | `4648.21 ms` |
+| **Throughput Sustentado** | **`86.05 req/s` (RPS)** |
+| **Taxa de Erro (5xx / Rollbacks Indevidos)** | **`0` (`0.00%`)** |
+| **Latência `p50` (sob rajada de 400 conexões)** | `2140.87 ms` |
+| **Latência `p95`** | `2551.73 ms` |
+| **Latência `p99`** | `2713.61 ms` |
+| **Conflitos de Idempotência / Unique Race (`23505`)** | `0` |
+| **Outbox Lag Final após Drenagem** | `0 ms` |
+| **Divergências na Reconciliação (`wallet == ledger`)** | **`0` em todas as 20 carteiras** |
+
+### 10.3 Análise Engenharia dos Resultados
+- Como todas as `400` requisições são disparadas no mesmo instante (`t = 0`) via `Promise.all`, cada grupo de `20` requisições da mesma carteira aguarda em fila ordenada pelo lock pessimista (`SELECT ... FOR UPDATE`) e pelo pool de conexões do PostgreSQL.
+- Isso explica por que a latência individual por operação completa gira em torno de `~11.6 ms` (`4648 ms / 400 ops`), mas o `p50`/`p95` medido desde o disparo da rajada reflete o tempo de espera na fila do pool (`~2.1s` a `~2.7s`), mantendo **zero erros (`0.00%`)** e **100% de precisão contábil**.
+

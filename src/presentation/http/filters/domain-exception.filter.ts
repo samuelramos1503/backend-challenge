@@ -8,7 +8,7 @@ import {
   Inject,
   NotFoundException,
 } from "@nestjs/common";
-import { Response, Request } from "express";
+import type { Response, Request } from "express";
 import {
   CurrencyMismatchError,
   DomainError,

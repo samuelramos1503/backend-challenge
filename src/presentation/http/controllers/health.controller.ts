@@ -1,6 +1,6 @@
 import { EntityManager } from "@mikro-orm/postgresql";
 import { Controller, Get, HttpStatus, Inject, Res } from "@nestjs/common";
-import { Response } from "express";
+import type { Response } from "express";
 import { SqsService } from "../../../infrastructure/messaging/sqs.service";
 import { MetricsService } from "../../../infrastructure/observability/metrics.service";
 import { Public } from "../guards/auth.guard";
