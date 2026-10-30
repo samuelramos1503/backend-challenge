@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { Message } from "@aws-sdk/client-sqs";
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { v7 as uuidv7 } from "uuid";
@@ -318,12 +319,13 @@ export class SqsWagerConsumerWorker implements OnModuleInit, OnModuleDestroy {
       rawBody: msg.Body,
     };
 
-    const dedupId = messageId ?? msg.MessageId ?? uuidv7();
+    const dedupSource = messageId ?? msg.MessageId ?? uuidv7();
+    const dedupHash = createHash("sha256").update(dedupSource).digest("hex");
     await this.sqsService.sendFifoMessage(
       WAGER_TRANSACTIONS_DLQ,
       JSON.stringify(dlqPayload),
       "dlq-group",
-      `dlq-${dedupId}`,
+      `dlq-${dedupHash}`,
     );
 
     if (msg.ReceiptHandle) {
@@ -333,7 +335,7 @@ export class SqsWagerConsumerWorker implements OnModuleInit, OnModuleDestroy {
     this.metrics.incrementDlqMessages();
     this.logger.error("SQS_MESSAGE_MOVED_TO_DLQ", `Message moved to DLQ: ${reason}`, {
       correlationId,
-      messageId: dedupId,
+      messageId: dedupSource,
       reason,
       error: error instanceof Error ? error.message : String(error),
     });

@@ -803,6 +803,42 @@ describe("Integration Tests — PostgreSQL + LocalStack SQS + Transactional Outb
     const dlqAfterKeySwap = await instance.sqsService.receiveMessages(WAGER_TRANSACTIONS_DLQ, 10, 0, 5);
     expect(dlqAfterKeySwap.length).toBe(1);
     expect(JSON.parse(dlqAfterKeySwap[0].Body || "{}").reason).toBe("IDEMPOTENCY_PAYLOAD_MISMATCH");
+    if (dlqAfterKeySwap[0].ReceiptHandle) {
+      await instance.sqsService.deleteMessage(WAGER_TRANSACTIONS_DLQ, dlqAfterKeySwap[0].ReceiptHandle);
+    }
+
+    // 6. Long messageId (200 chars) + disallowed external OPENING kind routes cleanly to DLQ via SHA-256 deduplication token
+    const longMessageId = `msg-long-${"x".repeat(191)}`;
+    expect(longMessageId.length).toBe(200);
+    const longIdOpeningEnvelope = {
+      messageId: longMessageId,
+      type: "WagerTransactionRequested",
+      occurredAt: new Date().toISOString(),
+      data: {
+        providerId: "prov-max",
+        externalTransactionId: "tx-long-id-opening",
+        idempotencyKey: "prov-max:tx-long-id-opening",
+        playerId: "player-max-ceiling",
+        walletId: maxWallet.id,
+        roundId: "round-max-4",
+        gameId: "fortune-chimp",
+        kind: "OPENING",
+        money: { amount: "10.00", currency: "BRL" },
+      },
+    };
+    await instance.sqsService.sendFifoMessage(
+      WAGER_TRANSACTIONS_QUEUE,
+      JSON.stringify(longIdOpeningEnvelope),
+      maxWallet.id,
+      longMessageId,
+    );
+    await instance.sqsConsumer.pollOnce();
+
+    const dlqAfterLongId = await instance.sqsService.receiveMessages(WAGER_TRANSACTIONS_DLQ, 10, 0, 5);
+    expect(dlqAfterLongId.length).toBe(1);
+    const dlqLongBody = JSON.parse(dlqAfterLongId[0].Body || "{}");
+    expect(dlqLongBody.originalMessageId).toBe(longMessageId);
+    expect(dlqLongBody.reason).toBe("INVALID_TRANSACTION_KIND");
 
     await assertWalletLedgerInvariant(instance, maxWallet.id);
   });

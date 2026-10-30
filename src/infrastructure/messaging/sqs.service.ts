@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import {
   ChangeMessageVisibilityCommand,
   CreateQueueCommand,
@@ -136,15 +137,24 @@ export class SqsService implements OnModuleInit {
     messageDeduplicationId: string,
   ): Promise<string | undefined> {
     const queueUrl = await this.ensureFifoQueue(queueName);
+    const safeGroupId = this.normalizeFifoToken(messageGroupId);
+    const safeDedupId = this.normalizeFifoToken(messageDeduplicationId);
     const res = await this.client.send(
       new SendMessageCommand({
         QueueUrl: queueUrl,
         MessageBody: body,
-        MessageGroupId: messageGroupId,
-        MessageDeduplicationId: messageDeduplicationId,
+        MessageGroupId: safeGroupId,
+        MessageDeduplicationId: safeDedupId,
       }),
     );
     return res.MessageId;
+  }
+
+  private normalizeFifoToken(token: string): string {
+    if (/^[\x21-\x7E]{1,128}$/.test(token)) {
+      return token;
+    }
+    return createHash("sha256").update(token).digest("hex");
   }
 
   public async checkHealth(): Promise<boolean> {
