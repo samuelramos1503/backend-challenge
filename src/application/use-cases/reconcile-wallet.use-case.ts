@@ -1,3 +1,4 @@
+import { IsolationLevel } from "@mikro-orm/core";
 import { EntityManager } from "@mikro-orm/postgresql";
 import { Inject, Injectable } from "@nestjs/common";
 import { v7 as uuidv7 } from "uuid";
@@ -32,48 +33,51 @@ export class ReconcileWalletUseCase {
       throw new WalletNotFoundError(walletId);
     }
 
-    return this.em.transactional(async (txEm) => {
-      const walletRepo = new MikroOrmWalletRepository(txEm);
-      const ledgerRepo = new MikroOrmWalletLedgerRepository(txEm);
+    return this.em.transactional(
+      async (txEm) => {
+        const walletRepo = new MikroOrmWalletRepository(txEm);
+        const ledgerRepo = new MikroOrmWalletLedgerRepository(txEm);
 
-      const wallet = await walletRepo.findById(walletId);
-      if (!wallet) {
-        throw new WalletNotFoundError(walletId);
-      }
+        const wallet = await walletRepo.findById(walletId);
+        if (!wallet) {
+          throw new WalletNotFoundError(walletId);
+        }
 
-      const summary = await ledgerRepo.reconcileWallet(wallet.id, wallet.currency);
-      const storedBalance = wallet.balance;
-      const calculatedBalance = summary.calculatedBalance;
-      const difference = storedBalance.subtract(calculatedBalance);
-      const consistent = storedBalance.equals(calculatedBalance);
+        const summary = await ledgerRepo.reconcileWallet(wallet.id, wallet.currency);
+        const storedBalance = wallet.balance;
+        const calculatedBalance = summary.calculatedBalance;
+        const difference = storedBalance.subtract(calculatedBalance);
+        const consistent = storedBalance.equals(calculatedBalance);
 
-      if (!consistent) {
-        this.metrics.incrementReconciliationDivergences();
-        this.logger.error("WALLET_RECONCILIATION_DIVERGENCE", "Divergence detected between wallet balance and ledger", {
-          correlationId,
+        if (!consistent) {
+          this.metrics.incrementReconciliationDivergences();
+          this.logger.error("WALLET_RECONCILIATION_DIVERGENCE", "Divergence detected between wallet balance and ledger", {
+            correlationId,
+            walletId: wallet.id,
+            consistent: false,
+            checkedEntries: summary.totalEntries,
+            differenceAmount: difference.amount,
+            currency: wallet.currency,
+          });
+        } else {
+          this.logger.info("WALLET_RECONCILIATION_OK", "Wallet reconciliation completed consistently", {
+            correlationId,
+            walletId: wallet.id,
+            consistent: true,
+            checkedEntries: summary.totalEntries,
+          });
+        }
+
+        return {
           walletId: wallet.id,
-          consistent: false,
+          storedBalance: storedBalance.toJSON(),
+          calculatedBalance: calculatedBalance.toJSON(),
+          difference: difference.toJSON(),
+          consistent,
           checkedEntries: summary.totalEntries,
-          differenceAmount: difference.amount,
-          currency: wallet.currency,
-        });
-      } else {
-        this.logger.info("WALLET_RECONCILIATION_OK", "Wallet reconciliation completed consistently", {
-          correlationId,
-          walletId: wallet.id,
-          consistent: true,
-          checkedEntries: summary.totalEntries,
-        });
-      }
-
-      return {
-        walletId: wallet.id,
-        storedBalance: storedBalance.toJSON(),
-        calculatedBalance: calculatedBalance.toJSON(),
-        difference: difference.toJSON(),
-        consistent,
-        checkedEntries: summary.totalEntries,
-      };
-    });
+        };
+      },
+      { isolationLevel: IsolationLevel.REPEATABLE_READ },
+    );
   }
 }

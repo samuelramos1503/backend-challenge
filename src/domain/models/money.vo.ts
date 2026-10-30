@@ -8,6 +8,11 @@ export interface MoneyProps {
 
 export class Money {
   private static readonly DECIMAL_REGEX = /^\d+\.\d{2}$/;
+  private static readonly CURRENCY_REGEX = /^[A-Z]{3}$/;
+  private static readonly MAX_AMOUNT = new Decimal("9999999999999999.99");
+  private static readonly SUPPORTED_CURRENCIES: ReadonlySet<string> = new Set(
+    Intl.supportedValuesOf("currency").filter((code) => code !== "XXX" && code !== "XTS"),
+  );
 
   private constructor(
     private readonly value: Decimal,
@@ -22,8 +27,11 @@ export class Money {
     const trimmedAmount = props.amount.trim();
     const trimmedCurrency = props.currency.trim().toUpperCase();
 
-    if (!trimmedCurrency || trimmedCurrency.length < 3) {
-      throw new InvalidAmountError(`Invalid currency code: '${props.currency}'`);
+    if (
+      !Money.CURRENCY_REGEX.test(trimmedCurrency) ||
+      !Money.SUPPORTED_CURRENCIES.has(trimmedCurrency)
+    ) {
+      throw new InvalidAmountError(`Invalid or unsupported ISO-4217 currency code: '${props.currency}'`);
     }
 
     if (!Money.DECIMAL_REGEX.test(trimmedAmount)) {
@@ -41,6 +49,12 @@ export class Money {
       throw new InvalidAmountError(`Amount must be a finite number, received '${props.amount}'`);
     }
 
+    if (parsed.greaterThan(Money.MAX_AMOUNT)) {
+      throw new InvalidAmountError(
+        `Amount exceeds maximum supported precision NUMERIC(18,2), received '${props.amount}'`,
+      );
+    }
+
     return new Money(parsed, trimmedCurrency);
   }
 
@@ -54,7 +68,11 @@ export class Money {
 
   public add(other: Money): Money {
     this.assertSameCurrency(other);
-    return new Money(this.value.plus(other.value), this.currency);
+    const sum = this.value.plus(other.value);
+    if (sum.greaterThan(Money.MAX_AMOUNT)) {
+      throw new InvalidAmountError("Resulting amount exceeds maximum supported precision NUMERIC(18,2).");
+    }
+    return new Money(sum, this.currency);
   }
 
   public subtract(other: Money): Money {

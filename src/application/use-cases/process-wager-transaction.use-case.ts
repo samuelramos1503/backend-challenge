@@ -83,20 +83,33 @@ export class ProcessWagerTransactionUseCase {
     if (!input.idempotencyKey || input.idempotencyKey.trim() === "") {
       throw new InvalidAmountError("Idempotency-Key is required.");
     }
+    if (input.idempotencyKey.length > 255) {
+      throw new InvalidAmountError("Idempotency-Key must not exceed 255 characters.");
+    }
 
-    const requiredStrings: (keyof ProcessWagerTransactionInput)[] = [
-      "providerId",
-      "externalTransactionId",
-      "playerId",
-      "walletId",
-      "roundId",
-      "gameId",
+    const fieldMaxLengths: Array<[keyof ProcessWagerTransactionInput, number]> = [
+      ["providerId", 100],
+      ["externalTransactionId", 150],
+      ["playerId", 100],
+      ["walletId", 100],
+      ["roundId", 100],
+      ["gameId", 100],
     ];
-    for (const field of requiredStrings) {
+    for (const [field, maxLen] of fieldMaxLengths) {
       const val = input[field];
       if (!val || typeof val !== "string" || val.trim() === "") {
         throw new InvalidAmountError(`Field '${field}' must be a non-empty string.`);
       }
+      if (val.length > maxLen) {
+        throw new InvalidAmountError(`Field '${field}' must not exceed ${maxLen} characters.`);
+      }
+    }
+
+    if (
+      input.referenceExternalTransactionId !== undefined &&
+      input.referenceExternalTransactionId.length > 150
+    ) {
+      throw new InvalidAmountError("Field 'referenceExternalTransactionId' must not exceed 150 characters.");
     }
 
     if (!ALLOWED_EXTERNAL_KINDS.has(input.kind)) {
@@ -143,17 +156,32 @@ export class ProcessWagerTransactionUseCase {
             input.inbox.consumerName,
             input.inbox.messageId,
           );
-          if (existingInbox && existingInbox.isProcessed()) {
-            this.metrics.incrementDuplicatesDetected();
-            this.logger.info("INBOX_DUPLICATE_DETECTED", "Duplicate SQS message skipped via Inbox", {
-              correlationId,
-              messageId: input.inbox.messageId,
-              providerId: input.providerId,
-              walletId: input.walletId,
-            });
-            const existingTx = await wagerTxRepo.findByIdempotencyKey(input.idempotencyKey);
-            if (existingTx) {
-              return this.buildReplayResult(existingTx, walletRepo);
+          if (existingInbox) {
+            if (existingInbox.payloadHash !== payloadHash) {
+              throw new IdempotencyConflictError(
+                `Inbox message '${input.inbox.messageId}' was previously processed with a different payload.`,
+              );
+            }
+            if (existingInbox.isProcessed()) {
+              const existingTx =
+                (await wagerTxRepo.findByIdempotencyKey(input.idempotencyKey)) ??
+                (await wagerTxRepo.findByProviderAndExternalId(
+                  input.providerId,
+                  input.externalTransactionId,
+                ));
+              if (existingTx) {
+                if (!existingTx.matchesPayload(payloadHash)) {
+                  throw new IdempotencyConflictError();
+                }
+                this.metrics.incrementDuplicatesDetected();
+                this.logger.info("INBOX_DUPLICATE_DETECTED", "Duplicate SQS message skipped via Inbox", {
+                  correlationId,
+                  messageId: input.inbox.messageId,
+                  providerId: input.providerId,
+                  walletId: input.walletId,
+                });
+                return this.buildReplayResult(existingTx, walletRepo);
+              }
             }
           }
         }
@@ -325,19 +353,21 @@ export class ProcessWagerTransactionUseCase {
         return null;
       }
 
-      // Reload tx after locking wallet to make sure another worker didn't just process it
-      const freshTx = await wagerTxRepo.findById(transactionId);
-      if (!freshTx || freshTx.status !== WagerTransactionStatus.PendingReference) {
+      // Reload and lock tx after locking wallet, verifying that status is still
+      // PENDING_REFERENCE and next_retry_at is due according to the database clock.
+      const dueClaim = await wagerTxRepo.findDuePendingReferenceByIdForUpdate(transactionId);
+      if (!dueClaim) {
         return null;
       }
 
       const result = await this.evaluateAndPersistTransaction(
-        freshTx,
+        dueClaim.transaction,
         wallet,
         { walletRepo, wagerTxRepo, ledgerRepo, outboxRepo },
         correlationId,
         undefined,
         true,
+        dueClaim.dbNow,
       );
 
       if (result.status !== WagerTransactionStatus.PendingReference) {
@@ -362,8 +392,9 @@ export class ProcessWagerTransactionUseCase {
     correlationId: string,
     messageId?: string,
     isRetryWorker = false,
+    nowOverride?: Date,
   ): Promise<ProcessWagerTransactionResult> {
-    const now = new Date();
+    const now = nowOverride ?? new Date();
 
     // Validate player ownership
     if (wallet.playerId !== tx.playerId) {

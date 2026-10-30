@@ -149,8 +149,11 @@ export class SqsService implements OnModuleInit {
 
   public async checkHealth(): Promise<boolean> {
     try {
-      await this.ensureFifoQueue(WAGER_TRANSACTIONS_QUEUE);
-      return true;
+      const res = await this.client.send(
+        new GetQueueUrlCommand({ QueueName: WAGER_TRANSACTIONS_QUEUE }),
+        { abortSignal: AbortSignal.timeout(2000) },
+      );
+      return Boolean(res.QueueUrl);
     } catch {
       return false;
     }

@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { v7 as uuidv7 } from "uuid";
 import { WAGER_TRANSACTIONS_QUEUE } from "../../src/infrastructure/messaging/sqs.service";
@@ -386,6 +387,217 @@ describe("Concurrency Tests — Real Parallelism, Multi-Instance Cluster & Fault
       await assertWalletLedgerInvariant(restartedInstance, wallet.id);
     } finally {
       await restartedInstance.app.close();
+    }
+  });
+
+  it("9. Concurrent PendingReferenceWorkers across 3 instances do not consume multiple retry attempts in the same backoff cycle", async () => {
+    const createRes = await fetch(`${app1.baseUrl}/wallets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        playerId: "player-pending-race",
+        initialBalance: { amount: "100.00", currency: "BRL" },
+      }),
+    });
+    const wallet = await createRes.json();
+
+    const refundRes = await fetch(`${app1.baseUrl}/wagering/transactions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "prov-pr:refund-race",
+      },
+      body: JSON.stringify({
+        providerId: "prov-pr",
+        externalTransactionId: "refund-race",
+        playerId: "player-pending-race",
+        walletId: wallet.id,
+        roundId: "round-pr-1",
+        gameId: "fortune-chimp",
+        kind: "REFUND",
+        money: { amount: "20.00", currency: "BRL" },
+        referenceExternalTransactionId: "missing-bet-pr",
+      }),
+    });
+    const refundBody = await refundRes.json();
+    expect(refundBody.status).toBe("PENDING_REFERENCE");
+
+    // Make the pending reference transaction due right now
+    await app1.em
+      .getConnection()
+      .execute(`UPDATE wager_transactions SET next_retry_at = NOW() - INTERVAL '1 second' WHERE id = ?`, [
+        refundBody.transactionId,
+      ]);
+
+    // Trigger 3 workers simultaneously in the same cycle
+    await Promise.all([
+      app1.pendingRefWorker.processDuePendingReferences(),
+      app2.pendingRefWorker.processDuePendingReferences(),
+      app3.pendingRefWorker.processDuePendingReferences(),
+    ]);
+
+    const txAfter = await (
+      await fetch(`${app1.baseUrl}/wagering/transactions/${refundBody.transactionId}`)
+    ).json();
+    expect(txAfter.status).toBe("PENDING_REFERENCE");
+    expect(txAfter.retryAttempts).toBe(1);
+
+    await assertWalletLedgerInvariant(app1, wallet.id);
+  });
+
+  it("10. Concurrent bet committing between wallet read and ledger sum during reconciliation does not cause false divergence", async () => {
+    const createRes = await fetch(`${app1.baseUrl}/wallets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        playerId: "player-recon-race",
+        initialBalance: { amount: "90.00", currency: "BRL" },
+      }),
+    });
+    const wallet = await createRes.json();
+
+    const { MikroOrmWalletLedgerRepository } = await import(
+      "../../src/infrastructure/database/repositories/mikro-orm-wallet-ledger.repository"
+    );
+    const origReconcile = MikroOrmWalletLedgerRepository.prototype.reconcileWallet;
+
+    let concurrentBetPromise: Promise<Response> | null = null;
+    MikroOrmWalletLedgerRepository.prototype.reconcileWallet = async function (
+      walletId: string,
+      currency: string,
+    ) {
+      // Controlled pause after wallet row was read: commit a 10.00 BRL bet on another connection before summing ledger
+      concurrentBetPromise = fetch(`${app2.baseUrl}/wagering/transactions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "prov-recon-race:bet-10",
+        },
+        body: JSON.stringify({
+          providerId: "prov-recon-race",
+          externalTransactionId: "bet-10",
+          playerId: "player-recon-race",
+          walletId,
+          roundId: "round-recon-1",
+          gameId: "fortune-chimp",
+          kind: "BET",
+          money: { amount: "10.00", currency },
+        }),
+      });
+      await concurrentBetPromise;
+      return origReconcile.call(this, walletId, currency);
+    };
+
+    try {
+      const reconRes = await fetch(`${app1.baseUrl}/wallets/${wallet.id}/reconciliation`, {
+        method: "POST",
+      });
+      expect(reconRes.status).toBe(200);
+      const reconBody = await reconRes.json();
+      expect(reconBody.consistent).toBe(true);
+      expect(reconBody.difference.amount).toBe("0.00");
+    } finally {
+      MikroOrmWalletLedgerRepository.prototype.reconcileWallet = origReconcile;
+    }
+
+    await assertWalletLedgerInvariant(app1, wallet.id);
+  });
+
+  it("11. Real child OS process kill and restart preserves financial and ledger consistency", async () => {
+    const childPort = 41987;
+    const childProc = spawn("bun", ["run", "src/main.ts"], {
+      env: {
+        ...process.env,
+        PORT: String(childPort),
+        LOG_SILENT: "true",
+        DISABLE_BACKGROUND_WORKERS: "true",
+      },
+      stdio: "ignore",
+    });
+
+    try {
+      // Wait for child process HTTP server to become ready
+      const childUrl = `http://127.0.0.1:${childPort}`;
+      let ready = false;
+      for (let i = 0; i < 40; i++) {
+        try {
+          const res = await fetch(`${childUrl}/health/live`);
+          if (res.ok) {
+            ready = true;
+            break;
+          }
+        } catch {
+          // still booting
+        }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      expect(ready).toBe(true);
+
+      const createRes = await fetch(`${childUrl}/wallets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: "player-real-kill",
+          initialBalance: { amount: "200.00", currency: "BRL" },
+        }),
+      });
+      const wallet = await createRes.json();
+
+      const betRes = await fetch(`${childUrl}/wagering/transactions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "prov-kill:bet-1",
+        },
+        body: JSON.stringify({
+          providerId: "prov-kill",
+          externalTransactionId: "bet-1",
+          playerId: "player-real-kill",
+          walletId: wallet.id,
+          roundId: "round-kill-1",
+          gameId: "fortune-chimp",
+          kind: "BET",
+          money: { amount: "75.00", currency: "BRL" },
+        }),
+      });
+      expect(betRes.status).toBe(200);
+
+      // Abruptly kill the OS process
+      childProc.kill("SIGKILL");
+      await new Promise<void>((resolve) => {
+        if (childProc.exitCode !== null) return resolve();
+        childProc.once("exit", () => resolve());
+      });
+
+      // Verify state from surviving cluster instance
+      const replayRes = await fetch(`${app1.baseUrl}/wagering/transactions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "prov-kill:bet-1",
+        },
+        body: JSON.stringify({
+          providerId: "prov-kill",
+          externalTransactionId: "bet-1",
+          playerId: "player-real-kill",
+          walletId: wallet.id,
+          roundId: "round-kill-1",
+          gameId: "fortune-chimp",
+          kind: "BET",
+          money: { amount: "75.00", currency: "BRL" },
+        }),
+      });
+      const replayBody = await replayRes.json();
+      expect(replayBody.idempotentReplay).toBe(true);
+      expect(replayBody.balance.amount).toBe("125.00");
+
+      await assertWalletLedgerInvariant(app1, wallet.id);
+    } finally {
+      try {
+        childProc.kill("SIGKILL");
+      } catch {
+        // already exited
+      }
     }
   });
 });

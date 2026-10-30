@@ -8,6 +8,7 @@ import { SqsService, WAGERING_EVENTS_QUEUE } from "./sqs.service";
 
 @Injectable()
 export class OutboxWorker implements OnModuleInit, OnModuleDestroy {
+  private static readonly MAX_PUBLISHED_LOG_SIZE = 500;
   private timer?: ReturnType<typeof setInterval>;
   private isShuttingDown = false;
   private activeBatchPromise: Promise<number> | null = null;
@@ -76,6 +77,12 @@ export class OutboxWorker implements OnModuleInit, OnModuleDestroy {
           await outboxRepo.markPublished(message.id, now);
           message.markPublished(now);
           this.publishedEventsLog.push(message);
+          if (this.publishedEventsLog.length > OutboxWorker.MAX_PUBLISHED_LOG_SIZE) {
+            this.publishedEventsLog.splice(
+              0,
+              this.publishedEventsLog.length - OutboxWorker.MAX_PUBLISHED_LOG_SIZE,
+            );
+          }
           count += 1;
 
           this.logger.info("OUTBOX_EVENT_PUBLISHED", `Published ${message.eventType}`, {

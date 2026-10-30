@@ -62,6 +62,9 @@ export class WagerTransactionOrmEntity {
   @Property({ type: "decimal", precision: 18, scale: 2, nullable: true })
   observedBalance?: string;
 
+  @Property({ type: "varchar", length: 3, nullable: true })
+  observedBalanceCurrency?: string;
+
   @Property({ type: "int", default: 0 })
   retryAttempts: number = 0;
 

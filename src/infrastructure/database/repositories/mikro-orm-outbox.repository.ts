@@ -42,7 +42,9 @@ export class MikroOrmOutboxRepository implements IOutboxRepository {
        ORDER BY occurred_at ASC
        LIMIT ?
        FOR UPDATE SKIP LOCKED`,
-      [limit]
+      [limit],
+      "all",
+      this.em.getTransactionContext(),
     );
 
     return rows.map((r) =>
@@ -63,7 +65,9 @@ export class MikroOrmOutboxRepository implements IOutboxRepository {
     const conn = this.em.getConnection();
     await conn.execute(
       `UPDATE outbox_messages SET published_at = ? WHERE id = ?`,
-      [at, id]
+      [at, id],
+      "run",
+      this.em.getTransactionContext(),
     );
   }
 
@@ -72,9 +76,11 @@ export class MikroOrmOutboxRepository implements IOutboxRepository {
     await conn.execute(
       `UPDATE outbox_messages
        SET attempts = attempts + 1,
-           next_attempt_at = NOW() + (LEAST(60, POWER(2, attempts)) || ' seconds')::INTERVAL
+           next_attempt_at = ?::timestamptz + (LEAST(60, POWER(2, attempts)) || ' seconds')::INTERVAL
        WHERE id = ?`,
-      [id]
+      [now.toISOString(), id],
+      "run",
+      this.em.getTransactionContext(),
     );
   }
 }

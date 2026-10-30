@@ -40,6 +40,9 @@ export class CreateWalletUseCase {
     if (!input?.playerId || typeof input.playerId !== "string" || input.playerId.trim() === "") {
       throw new InvalidAmountError("playerId must be a non-empty string.");
     }
+    if (input.playerId.length > 100) {
+      throw new InvalidAmountError("playerId must not exceed 100 characters.");
+    }
 
     const initialMoney = input.initialBalance
       ? Money.from(input.initialBalance)

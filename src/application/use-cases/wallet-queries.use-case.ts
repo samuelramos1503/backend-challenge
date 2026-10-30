@@ -51,6 +51,8 @@ export interface WagerTransactionView {
   referenceTransactionId?: string;
   failureCode?: string;
   balance?: MoneyProps;
+  retryAttempts: number;
+  nextRetryAt?: string;
   processedAt?: string;
   createdAt: string;
 }
@@ -173,6 +175,8 @@ export class GetWagerTransactionUseCase {
       ...(tx.referenceTransactionId ? { referenceTransactionId: tx.referenceTransactionId } : {}),
       ...(tx.failureCode ? { failureCode: tx.failureCode } : {}),
       ...(tx.observedBalance ? { balance: tx.observedBalance.toJSON() } : {}),
+      retryAttempts: tx.retryAttempts,
+      ...(tx.nextRetryAt ? { nextRetryAt: tx.nextRetryAt.toISOString() } : {}),
       ...(tx.processedAt ? { processedAt: tx.processedAt.toISOString() } : {}),
       createdAt: tx.createdAt.toISOString(),
     };

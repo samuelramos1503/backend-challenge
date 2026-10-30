@@ -81,7 +81,9 @@ export class MikroOrmWalletLedgerRepository implements IWalletLedgerRepository {
          COUNT(*) AS total_count
        FROM wallet_ledger_entries
        WHERE wallet_id = ?`,
-      [walletId]
+      [walletId],
+      "all",
+      this.em.getTransactionContext(),
     );
 
     const row = res[0] || { total_credit: "0.00", total_debit: "0.00", total_count: "0" };

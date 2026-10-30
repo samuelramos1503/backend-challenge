@@ -205,6 +205,13 @@ export class WagerTransaction {
     return this._retryAttempts >= maxAttempts;
   }
 
+  public isDueForRetry(now: Date = new Date()): boolean {
+    if (this._status !== WagerTransactionStatus.PendingReference) {
+      return false;
+    }
+    return !this._nextRetryAt || this._nextRetryAt.getTime() <= now.getTime();
+  }
+
   public reject(code: FailureCode, observedBalance?: Money): void {
     this.assertNotTerminal();
     this._status = WagerTransactionStatus.Rejected;

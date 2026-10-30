@@ -56,4 +56,18 @@ describe("Money Value Object", () => {
     expect(m1.isZero()).toBe(false);
     expect(Money.zero("BRL").isZero()).toBe(true);
   });
+
+  it("should reject unsupported or malformed currency codes and amounts exceeding NUMERIC(18,2)", () => {
+    expect(() => Money.from({ amount: "10.00", currency: "ABCD" })).toThrow(InvalidAmountError);
+    expect(() => Money.from({ amount: "10.00", currency: "QQQ" })).toThrow(InvalidAmountError);
+    expect(() => Money.from({ amount: "10.00", currency: "XXX" })).toThrow(InvalidAmountError);
+    expect(() => Money.from({ amount: "10000000000000000.00", currency: "BRL" })).toThrow(
+      InvalidAmountError,
+    );
+
+    const max = Money.from({ amount: "9999999999999999.99", currency: "BRL" });
+    expect(() => max.add(Money.from({ amount: "0.01", currency: "BRL" }))).toThrow(
+      InvalidAmountError,
+    );
+  });
 });

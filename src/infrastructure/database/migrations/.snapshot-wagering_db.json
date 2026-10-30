@@ -542,6 +542,22 @@
           "enumItems": [],
           "mappedType": "decimal"
         },
+        "observed_balance_currency": {
+          "name": "observed_balance_currency",
+          "type": "varchar(3)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 3,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "string"
+        },
         "retry_attempts": {
           "name": "retry_attempts",
           "type": "int4",
