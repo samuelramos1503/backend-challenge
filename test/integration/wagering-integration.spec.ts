@@ -661,4 +661,149 @@ describe("Integration Tests — PostgreSQL + LocalStack SQS + Transactional Outb
 
     await assertWalletLedgerInvariant(instance, wallet.id);
   });
+
+  it("should handle null optional reference, Inbox idempotencyKey mismatch, SQS envelope validation, and max-ceiling ledger reconciliation", async () => {
+    // 1. Open wallet at maximum NUMERIC(18,2) ceiling (9999999999999999.99 BRL)
+    const maxWalletRes = await fetch(`${instance.baseUrl}/wallets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        playerId: "player-max-ceiling",
+        initialBalance: { amount: "9999999999999999.99", currency: "BRL" },
+      }),
+    });
+    expect(maxWalletRes.status).toBe(201);
+    const maxWallet = await maxWalletRes.json();
+
+    // 2. BET 10.00 with referenceExternalTransactionId: null -> normalized cleanly (200 OK, not 500)
+    const betNullRefRes = await fetch(`${instance.baseUrl}/wagering/transactions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "prov-max:bet-null-ref",
+      },
+      body: JSON.stringify({
+        providerId: "prov-max",
+        externalTransactionId: "bet-null-ref",
+        playerId: "player-max-ceiling",
+        walletId: maxWallet.id,
+        roundId: "round-max-1",
+        gameId: "fortune-chimp",
+        kind: "BET",
+        money: { amount: "10.00", currency: "BRL" },
+        referenceExternalTransactionId: null,
+      }),
+    });
+    expect(betNullRefRes.status).toBe(200);
+
+    // 3. WIN 10.00 -> balance returns to 9999999999999999.99, while cumulative credits = 10000000000000009.99
+    const winMaxRes = await fetch(`${instance.baseUrl}/wagering/transactions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "prov-max:win-max",
+      },
+      body: JSON.stringify({
+        providerId: "prov-max",
+        externalTransactionId: "win-max",
+        playerId: "player-max-ceiling",
+        walletId: maxWallet.id,
+        roundId: "round-max-1",
+        gameId: "fortune-chimp",
+        kind: "WIN",
+        money: { amount: "10.00", currency: "BRL" },
+        referenceExternalTransactionId: "bet-null-ref",
+      }),
+    });
+    expect(winMaxRes.status).toBe(200);
+
+    // Reconciliation must succeed with 200 OK even when historical cumulative credits exceed NUMERIC(18,2)
+    const reconMaxRes = await fetch(`${instance.baseUrl}/wallets/${maxWallet.id}/reconciliation`, {
+      method: "POST",
+    });
+    expect(reconMaxRes.status).toBe(200);
+    const reconMaxBody = await reconMaxRes.json();
+    expect(reconMaxBody.consistent).toBe(true);
+    expect(reconMaxBody.difference.amount).toBe("0.00");
+
+    // 4. SQS envelope validation: reject unrelated event type or invalid occurredAt date without debiting wallet
+    const invalidTypeEnvelope = {
+      messageId: `msg-bad-type-${uuidv7()}`,
+      type: "UnrelatedEvent",
+      occurredAt: "not-a-valid-date",
+      data: {
+        providerId: "prov-max",
+        externalTransactionId: "tx-unrelated",
+        idempotencyKey: "prov-max:tx-unrelated",
+        playerId: "player-max-ceiling",
+        walletId: maxWallet.id,
+        roundId: "round-max-2",
+        gameId: "fortune-chimp",
+        kind: "BET",
+        money: { amount: "50.00", currency: "BRL" },
+      },
+    };
+    await instance.sqsService.sendFifoMessage(
+      WAGER_TRANSACTIONS_QUEUE,
+      JSON.stringify(invalidTypeEnvelope),
+      maxWallet.id,
+      `dedup-bad-env-${uuidv7()}`,
+    );
+    await instance.sqsConsumer.pollOnce();
+
+    const dlqAfterBadEnv = await instance.sqsService.receiveMessages(WAGER_TRANSACTIONS_DLQ, 10, 0, 5);
+    expect(dlqAfterBadEnv.length).toBe(1);
+    expect(JSON.parse(dlqAfterBadEnv[0].Body || "{}").reason).toBe("MALFORMED_MESSAGE_ENVELOPE");
+    if (dlqAfterBadEnv[0].ReceiptHandle) {
+      await instance.sqsService.deleteMessage(WAGER_TRANSACTIONS_DLQ, dlqAfterBadEnv[0].ReceiptHandle);
+    }
+
+    // 5. Inbox replay with same messageId and business data but different idempotencyKey -> 409/DLQ conflict
+    const sharedMsgId = `msg-key-swap-${uuidv7()}`;
+    const validSqSEnvelope = {
+      messageId: sharedMsgId,
+      type: "WagerTransactionRequested",
+      occurredAt: new Date().toISOString(),
+      data: {
+        providerId: "prov-max",
+        externalTransactionId: "tx-key-swap-1",
+        idempotencyKey: "prov-max:key-original",
+        playerId: "player-max-ceiling",
+        walletId: maxWallet.id,
+        roundId: "round-max-3",
+        gameId: "fortune-chimp",
+        kind: "BET",
+        money: { amount: "25.00", currency: "BRL" },
+      },
+    };
+
+    await instance.sqsService.sendFifoMessage(
+      WAGER_TRANSACTIONS_QUEUE,
+      JSON.stringify(validSqSEnvelope),
+      maxWallet.id,
+      `dedup-ks-1-${uuidv7()}`,
+    );
+    await instance.sqsConsumer.pollOnce();
+
+    const keySwappedEnvelope = {
+      ...validSqSEnvelope,
+      data: {
+        ...validSqSEnvelope.data,
+        idempotencyKey: "prov-max:key-different",
+      },
+    };
+    await instance.sqsService.sendFifoMessage(
+      WAGER_TRANSACTIONS_QUEUE,
+      JSON.stringify(keySwappedEnvelope),
+      maxWallet.id,
+      `dedup-ks-2-${uuidv7()}`,
+    );
+    await instance.sqsConsumer.pollOnce();
+
+    const dlqAfterKeySwap = await instance.sqsService.receiveMessages(WAGER_TRANSACTIONS_DLQ, 10, 0, 5);
+    expect(dlqAfterKeySwap.length).toBe(1);
+    expect(JSON.parse(dlqAfterKeySwap[0].Body || "{}").reason).toBe("IDEMPOTENCY_PAYLOAD_MISMATCH");
+
+    await assertWalletLedgerInvariant(instance, maxWallet.id);
+  });
 });

@@ -79,7 +79,6 @@ export class Migration20261029000001_initial_schema extends Migration {
         reference_transaction_id UUID REFERENCES wager_transactions(id),
         failure_code VARCHAR(50),
         observed_balance NUMERIC(18, 2) CHECK (observed_balance IS NULL OR observed_balance >= 0),
-        observed_balance_currency VARCHAR(3),
         retry_attempts INT NOT NULL DEFAULT 0,
         next_retry_at TIMESTAMPTZ,
         processed_at TIMESTAMPTZ,

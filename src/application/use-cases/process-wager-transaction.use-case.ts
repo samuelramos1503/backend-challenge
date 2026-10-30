@@ -105,11 +105,23 @@ export class ProcessWagerTransactionUseCase {
       }
     }
 
+    let referenceExternalTransactionId: string | undefined;
     if (
       input.referenceExternalTransactionId !== undefined &&
-      input.referenceExternalTransactionId.length > 150
+      input.referenceExternalTransactionId !== null
     ) {
-      throw new InvalidAmountError("Field 'referenceExternalTransactionId' must not exceed 150 characters.");
+      if (typeof input.referenceExternalTransactionId !== "string") {
+        throw new InvalidAmountError("Field 'referenceExternalTransactionId' must be a string.");
+      }
+      if (input.referenceExternalTransactionId.trim() === "") {
+        throw new InvalidAmountError(
+          "Field 'referenceExternalTransactionId' must not be an empty string.",
+        );
+      }
+      if (input.referenceExternalTransactionId.length > 150) {
+        throw new InvalidAmountError("Field 'referenceExternalTransactionId' must not exceed 150 characters.");
+      }
+      referenceExternalTransactionId = input.referenceExternalTransactionId;
     }
 
     if (!ALLOWED_EXTERNAL_KINDS.has(input.kind)) {
@@ -119,9 +131,13 @@ export class ProcessWagerTransactionUseCase {
     const kind = input.kind as WagerTransactionKind;
     if (
       (kind === WagerTransactionKind.Refund || kind === WagerTransactionKind.Rollback) &&
-      (!input.referenceExternalTransactionId || input.referenceExternalTransactionId.trim() === "")
+      !referenceExternalTransactionId
     ) {
       throw new InvalidReferenceError(`Transaction kind ${kind} requires referenceExternalTransactionId.`);
+    }
+
+    if (kind === WagerTransactionKind.Bet && referenceExternalTransactionId) {
+      throw new InvalidReferenceError("Transaction kind BET must not reference another transaction.");
     }
 
     const money = Money.from(input.money);
@@ -138,7 +154,7 @@ export class ProcessWagerTransactionUseCase {
       gameId: input.gameId,
       kind,
       money: money.toJSON(),
-      referenceExternalTransactionId: input.referenceExternalTransactionId,
+      referenceExternalTransactionId,
     });
     const payloadHash = CanonicalJsonService.hash(canonicalPayload);
 
@@ -170,7 +186,10 @@ export class ProcessWagerTransactionUseCase {
                   input.externalTransactionId,
                 ));
               if (existingTx) {
-                if (!existingTx.matchesPayload(payloadHash)) {
+                if (
+                  existingTx.idempotencyKey !== input.idempotencyKey ||
+                  !existingTx.matchesPayload(payloadHash)
+                ) {
                   throw new IdempotencyConflictError();
                 }
                 this.metrics.incrementDuplicatesDetected();
@@ -298,7 +317,7 @@ export class ProcessWagerTransactionUseCase {
           gameId: input.gameId,
           kind,
           money,
-          referenceExternalTransactionId: input.referenceExternalTransactionId,
+          referenceExternalTransactionId,
         });
 
         const evaluation = await this.evaluateAndPersistTransaction(

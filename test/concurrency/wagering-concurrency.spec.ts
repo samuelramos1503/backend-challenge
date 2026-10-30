@@ -591,6 +591,54 @@ describe("Concurrency Tests — Real Parallelism, Multi-Instance Cluster & Fault
       expect(replayBody.idempotentReplay).toBe(true);
       expect(replayBody.balance.amount).toBe("125.00");
 
+      // Now spawn a child worker process that crashes in the EXACT window after DB commit and before SQS ACK
+      const sqsCrashMsgId = `msg-proc-crash-${uuidv7()}`;
+      await app1.sqsService.sendFifoMessage(
+        WAGER_TRANSACTIONS_QUEUE,
+        JSON.stringify({
+          messageId: sqsCrashMsgId,
+          type: "WagerTransactionRequested",
+          occurredAt: new Date().toISOString(),
+          data: {
+            providerId: "prov-kill",
+            externalTransactionId: "bet-sqs-kill-window",
+            idempotencyKey: "prov-kill:bet-sqs-kill-window",
+            playerId: "player-real-kill",
+            walletId: wallet.id,
+            roundId: "round-kill-2",
+            gameId: "fortune-chimp",
+            kind: "BET",
+            money: { amount: "25.00", currency: "BRL" },
+          },
+        }),
+        wallet.id,
+        `dedup-proc-crash-${uuidv7()}`,
+      );
+
+      const sqsCrashWorker = spawn("bun", ["run", "src/main.ts"], {
+        env: {
+          ...process.env,
+          PORT: String(childPort + 1),
+          LOG_SILENT: "true",
+          DISABLE_BACKGROUND_WORKERS: "false",
+          SQS_POLL_INTERVAL_MS: "100",
+          CRASH_AFTER_COMMIT_BEFORE_ACK: "true",
+        },
+        stdio: "ignore",
+      });
+
+      const workerExitCode = await new Promise<number | null>((resolve) => {
+        sqsCrashWorker.once("exit", (code) => resolve(code));
+      });
+      expect(workerExitCode).toBe(137);
+
+      // Surviving cluster instance polls the un-ACKed redelivered message from SQS and deduplicates via Inbox
+      const redeliveredCount = await app1.sqsConsumer.pollOnce();
+      expect(redeliveredCount).toBe(1);
+
+      const finalWallet = await (await fetch(`${app1.baseUrl}/wallets/${wallet.id}`)).json();
+      expect(finalWallet.balance.amount).toBe("100.00"); // 200 - 75 - 25 = 100.00 (no double debit!)
+
       await assertWalletLedgerInvariant(app1, wallet.id);
     } finally {
       try {

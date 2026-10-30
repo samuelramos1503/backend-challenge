@@ -87,15 +87,22 @@ export class MikroOrmWalletLedgerRepository implements IWalletLedgerRepository {
     );
 
     const row = res[0] || { total_credit: "0.00", total_debit: "0.00", total_count: "0" };
-    const totalCredit = Money.from({
-      amount: new Decimal(row.total_credit || "0").toFixed(2),
+    const creditDec = new Decimal(row.total_credit || "0");
+    const debitDec = new Decimal(row.total_debit || "0");
+    const netDec = creditDec.minus(debitDec);
+
+    const totalCredit = Money.fromUnbounded({
+      amount: creditDec.toFixed(2),
       currency,
     });
-    const totalDebit = Money.from({
-      amount: new Decimal(row.total_debit || "0").toFixed(2),
+    const totalDebit = Money.fromUnbounded({
+      amount: debitDec.toFixed(2),
       currency,
     });
-    const calculatedBalance = totalCredit.subtract(totalDebit);
+    const calculatedBalance = Money.fromUnbounded({
+      amount: netDec.toFixed(2),
+      currency,
+    });
 
     return {
       walletId,

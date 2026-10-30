@@ -20,6 +20,18 @@ export class Money {
   ) {}
 
   public static from(props: MoneyProps): Money {
+    return Money.parse(props, true);
+  }
+
+  /**
+   * Parses a Money value without enforcing the single-column NUMERIC(18,2) ceiling.
+   * Used exclusively for historical ledger sum aggregations during reconciliation.
+   */
+  public static fromUnbounded(props: MoneyProps): Money {
+    return Money.parse(props, false);
+  }
+
+  private static parse(props: MoneyProps, enforceMaxCeiling: boolean): Money {
     if (!props || typeof props.amount !== "string" || typeof props.currency !== "string") {
       throw new InvalidAmountError("Amount and currency must be non-empty strings.");
     }
@@ -34,7 +46,8 @@ export class Money {
       throw new InvalidAmountError(`Invalid or unsupported ISO-4217 currency code: '${props.currency}'`);
     }
 
-    if (!Money.DECIMAL_REGEX.test(trimmedAmount)) {
+    const regex = enforceMaxCeiling ? Money.DECIMAL_REGEX : /^-?\d+\.\d{2}$/;
+    if (!regex.test(trimmedAmount)) {
       throw new InvalidAmountError(`Amount must have exactly 2 decimal places, received '${props.amount}'`);
     }
 
@@ -49,7 +62,7 @@ export class Money {
       throw new InvalidAmountError(`Amount must be a finite number, received '${props.amount}'`);
     }
 
-    if (parsed.greaterThan(Money.MAX_AMOUNT)) {
+    if (enforceMaxCeiling && parsed.greaterThan(Money.MAX_AMOUNT)) {
       throw new InvalidAmountError(
         `Amount exceeds maximum supported precision NUMERIC(18,2), received '${props.amount}'`,
       );
