@@ -7,7 +7,7 @@ export interface MoneyProps {
 }
 
 export class Money {
-  private static readonly DECIMAL_REGEX = /^-?\d+\.\d{2}$/;
+  private static readonly DECIMAL_REGEX = /^\d+\.\d{2}$/;
 
   private constructor(
     private readonly value: Decimal,

@@ -73,6 +73,27 @@ export class WalletNotFoundError extends DomainError {
   }
 }
 
+export class DuplicateWalletError extends DomainError {
+  readonly code = FailureCode.WALLET_ALREADY_EXISTS;
+  constructor(playerId: string, currency: string) {
+    super(`Wallet already exists for player '${playerId}' and currency '${currency}'.`);
+  }
+}
+
+export class TransactionNotFoundError extends DomainError {
+  readonly code = FailureCode.TRANSACTION_NOT_FOUND;
+  constructor(identifier: string) {
+    super(`Wager transaction '${identifier}' not found.`);
+  }
+}
+
+export class InvalidTransactionKindError extends DomainError {
+  readonly code = FailureCode.INVALID_TRANSACTION_KIND;
+  constructor(kind: string) {
+    super(`Transaction kind '${kind}' is not allowed or invalid.`);
+  }
+}
+
 export class UnbalancedLedgerEntryError extends DomainError {
   readonly code = FailureCode.INTERNAL_ERROR;
   constructor(message = "Ledger entry arithmetic is unbalanced (balanceBefore +/- amount !== balanceAfter).") {

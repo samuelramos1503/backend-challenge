@@ -59,6 +59,15 @@ export class WagerTransactionOrmEntity {
   @Property({ type: "varchar", length: 50, nullable: true })
   failureCode?: FailureCode;
 
+  @Property({ type: "decimal", precision: 18, scale: 2, nullable: true })
+  observedBalance?: string;
+
+  @Property({ type: "int", default: 0 })
+  retryAttempts: number = 0;
+
+  @Property({ type: "timestamptz", nullable: true })
+  nextRetryAt?: Date;
+
   @Property({ type: "timestamptz", nullable: true })
   processedAt?: Date;
 

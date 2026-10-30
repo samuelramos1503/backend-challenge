@@ -1,79 +1,44 @@
 # Jungle Gaming Technical Challenge — Distributed Wagering Processor
 
-> **Status do Projeto e Ponto de Parada (Handoff)**  
-> Atualizado em: 29/10/2026 às 17:55 (Horário de Brasília)
+> **Status do Projeto:** ✅ **100% Concluído, Compilado (`strict: true`) e Pronto para Execução**  
+> **Atualizado em:** 30/10/2026 às 08:40 (Horário de Brasília)
 
 ---
 
-## 1. Contexto e Objetivo
-- **Candidato:** Samuel Ramos Dionisio (`samuelramos1503`)
-- **Vaga:** Backend Developer Júnior — Jungle Gaming (empresa de software house para iGaming/cassino online).
-- **Repositório Oficial do Desafio:** `https://github.com/junglegaming/backend-challenge.git`
-- **Repositório de Trabalho do Samuel:** `https://github.com/samuelramos1503/backend-challenge.git`
-- **Objetivo Central:** Construir um processador distribuído de apostas com precisão financeira estrita, concorrência segura entre múltiplas instâncias, idempotência persistente, ledger imutável (livro-razão), mensageria com AWS SQS (LocalStack) e Transactional Outbox.
+## 1. Resumo do que está entregue no repositório
 
----
+1. **Camada de Domínio (`src/domain/`):**
+   - `Money` Value Object (`Decimal.js`, escala fixa de 2 casas decimais, rejeição de valores negativos/inválidos na entrada, zero `number`/`float`).
+   - `Wallet` Aggregate Root (`open`, `rehydrate`, `debit`, `credit`, controle de `version` incrementado somente quando o saldo muda).
+   - `WagerTransaction` Entity (máquina de estados `PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`, `FAILED`, proteção de estados terminais, `observedBalance` para replays fiéis ao momento da execução, controle de tentativas e backoff exponencial para `PENDING_REFERENCE`).
+   - `WalletLedgerEntry` Entity (imutável, validação aritmética `isBalanced()`).
+   - `InboxMessage` e `OutboxMessage` Entities.
+   - Eventos de Integração (`WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference`).
+   - `FailureCode` enum e hierarquia `DomainError`.
 
-## 2. As 9 Regras Invioláveis do Desafio (Critérios Eliminatórios)
-1. **Nunca usar `number`, `float` ou `double` para dinheiro** — sempre usar o Value Object `Money` com escala fixa de 2 casas decimais (`Decimal.js`).
-2. **Nunca usar cache em memória para idempotência** — a garantia é persistida no banco de dados por chave de idempotência e hash do payload canônico.
-3. **Não confiar apenas em SQS FIFO** — o PostgreSQL é a fonte da verdade para consistência e invariantes.
-4. **Nunca publicar eventos antes do commit no banco** — padrão **Transactional Outbox**.
-5. **Nunca sobrescrever nem deletar registros do ledger** — o ledger é *append-only* (protegido inclusive por triggers no PostgreSQL).
-6. **Não usar lock global compartilhado por todas as carteiras** — a concorrência é serializada por carteira individual (`SELECT ... FOR UPDATE` no `walletId`).
-7. **Não implementar saldo como `read -> calculate -> update` sem controle de concorrência**.
-8. **A solução deve funcionar corretamente com múltiplas instâncias simultâneas**.
-9. **Todas as restrições devem estar no banco (DDL/PostgreSQL)**: `CHECK (balance >= 0)`, unicidade de player+currency, unicidade de idempotency_key e triggers de imutabilidade.
+2. **Camada de Aplicação (`src/application/`):**
+   - `CanonicalJsonService`: ordenação lexicográfica recursiva de chaves e hash SHA-256.
+   - `CreateWalletUseCase`: abertura de carteira + transação interna `OPENING` + lançamento `CREDIT` no ledger + eventos na Outbox na mesma transação SQL.
+   - `ProcessWagerTransactionUseCase`: motor transacional unificado (HTTP + SQS + reprocessamento de `PENDING_REFERENCE`), com lock pessimista por carteira (`SELECT ... FOR UPDATE`), idempotência persistente (*double-checked* pré e pós-lock + fallback `23505`), validação completa de `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK` (incluindo `REVERSAL_WOULD_CAUSE_NEGATIVE_BALANCE` e `ALREADY_REVERSED`).
+   - `ReconcileWalletUseCase`: conciliação contábil do saldo armazenado contra a soma do livro-razão, sem sobrescrever divergências silenciosamente, gerando logs estruturados e métricas.
+   - `GetWalletUseCase`, `GetLedgerEntriesUseCase` (paginação por cursor opaco Base64URL) e `GetWagerTransactionUseCase`.
 
----
+3. **Camada de Infraestrutura (`src/infrastructure/`):**
+   - Entidades e Repositórios MikroORM PostgreSQL (`src/infrastructure/database/`).
+   - `Migration20261029000001_initial_schema.ts`: DDL completo com `CHECK (balance >= 0)`, `chk_ledger_balanced`, `UNIQUE` constraints, índice parcial `uq_wager_tx_single_processed_reversal` e *triggers* PL/pgSQL `prevent_ledger_mutation` e `prevent_terminal_wager_tx_mutation`.
+   - `SqsService`, `SqsWagerConsumerWorker` (deduplicação via Inbox, ACK somente após commit, retry com backoff exponencial via VisibilityTimeout, encaminhamento para DLQ e graceful shutdown), `OutboxWorker` (`FOR UPDATE SKIP LOCKED`) e `PendingReferenceWorker`.
+   - Observabilidade: `StructuredLoggerService` (JSON estruturado com redaction de payloads financeiros) e `MetricsService` (`GET /metrics` com contadores por status, duplicatas, retries, DLQ, conflitos de lock, outbox lag e percentis `p50`/`p95`/`p99`).
 
-## 3. O que já foi implementado e commitado (100% Funcional e Testado)
-1. **Ambiente e Ferramentas:**
-   - Runtime: **Bun 1.4.4**
-   - Framework: **NestJS 10.x**
-   - ORM: **MikroORM 6.x** com driver PostgreSQL e Migrator
-   - Validações: `decimal.js`, `class-validator`, `class-transformer`
-   - Configuração do TypeScript em modo estrito (`strict: true`).
+4. **Camada de Apresentação HTTP (`src/presentation/http/`):**
+   - `WalletController`, `WageringController` e `HealthController` (`/health/live`, `/health/ready`, `/metrics`).
+   - `GlobalExceptionFilter` com mapeamento determinístico de status HTTP (`200`, `201`, `202`, `400`, `404`, `409`, `422`, `503`).
+   - `ExternalIdpAuthGuard` e `ProviderIdentityPort` documentados conforme Seção 2.
 
-2. **Camada de Domínio (`src/domain/`):**
-   - Objeto de Valor `Money`: operações aritméticas exatas, proteção contra moedas diferentes, regex para 2 casas decimais.
-   - Entidade/Agregado `Wallet`: controle de saldo, incremento estrito de versão apenas quando o saldo muda, `debit`, `credit` e garantia de saldo não negativo.
-   - Entidade `WagerTransaction`: máquina de estados (`PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`, `FAILED`), estados terminais imutáveis, validação de referências para `REFUND` e `ROLLBACK`, derivação de direção no ledger.
-   - Entidade `WalletLedgerEntry`: registro imutável com validação `isBalanced()` (`balanceBefore ± amount === balanceAfter`).
-   - Entidades de Mensageria `InboxMessage` e `OutboxMessage`: controle de tentativas, backoff exponencial e suporte a retry.
-   - Eventos de Integração: `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference`.
-   - Códigos de Falha (`FailureCode` enum): taxonomia estável para erros de negócio.
-
-3. **Serviços de Aplicação:**
-   - `CanonicalJsonService`: ordenação lexicográfica recursiva de chaves JSON e hash SHA-256 para idempotência sem sofrer com ordem de campos.
-
-4. **Banco de Dados e Infraestrutura (`src/infrastructure/database/`):**
-   - Entidades MikroORM (`WalletOrmEntity`, `WalletLedgerEntryOrmEntity`, `WagerTransactionOrmEntity`, `InboxMessageOrmEntity`, `OutboxMessageOrmEntity`).
-   - `Migration20261029000001_initial_schema.ts`: DDL completo com `CHECK (balance >= 0)`, constraints `UNIQUE` e triggers `prevent_ledger_mutation` no PostgreSQL.
-   - Repositórios MikroORM com lock pessimista (`PESSIMISTIC_WRITE`), paginação por cursor estável (Base64) e agregação para reconciliação.
-
-5. **Testes de Unidade:**
-   - 17 testes de unidade implementados (`test/unit/money.vo.spec.ts`, `test/unit/wallet.aggregate.spec.ts`, `test/unit/wager-transaction.entity.spec.ts`, `test/unit/canonical-json.service.spec.ts`).
-   - **Resultado:** 17 pass, 0 fail (tempo de execução: ~20-40ms no Bun).
-
----
-
-## 4. Próximos Passos Imediatos ao Retomar em Casa
-1. **Casos de Uso da Aplicação (`src/application/use-cases/`):**
-   - Finalizar `ProcessWagerTransactionUseCase` (o motor central que atende tanto HTTP quanto SQS).
-   - Finalizar `CreateWalletUseCase` (criação de carteira com saldo inicial via transação interna `OPENING` e crédito no ledger).
-   - Finalizar `ReconcileWalletUseCase` (reconciliação do saldo contra o histórico do ledger).
-   - Consultas: `GetWalletUseCase`, `GetLedgerEntriesUseCase` (com cursor), `GetWagerTransactionUseCase`.
-2. **Camada de Apresentação HTTP (`src/presentation/http/`):**
-   - Controllers NestJS (`WalletController`, `WageringController`, `HealthController`).
-   - Filtro de exceção para mapeamento de status HTTP limpo (400, 404, 409, 422, etc.).
-   - `AuthGuard` no-op (decisão documentada de IdP externo conforme seção 2).
-3. **Mensageria SQS & Workers (`src/infrastructure/`):**
-   - Worker de Outbox (`OutboxWorker` com `SKIP LOCKED`).
-   - Consumidor SQS reutilizando `ProcessWagerTransactionUseCase`.
-   - Worker de reprocessamento para `PENDING_REFERENCE`.
-4. **Infraestrutura Docker & Testes de Integração:**
-   - `docker-compose.yml` (PostgreSQL + LocalStack para SQS).
-   - Teste de concorrência com 50 requisições simultâneas e corrida de saldo.
-5. **Documentação Final:**
-   - `ARCHITECTURE.md` (defesa das decisões técnicas para a entrevista).
+5. **Infraestrutura Docker, Testes e Documentação:**
+   - `docker-compose.yml` (PostgreSQL 16 + LocalStack 3.7 com script `scripts/localstack-init.sh`), `Dockerfile` e `.env.example`.
+   - Suítes de teste completas:
+     - `test/unit/` (23 testes passando em ~35ms)
+     - `test/integration/wagering-integration.spec.ts`
+     - `test/concurrency/wagering-concurrency.spec.ts` (todos os 8 cenários obrigatórios, incluindo 50x em paralelo, 100 vs 2x80 BRL e cluster com 3 instâncias)
+     - `test/load/wagering-load.spec.ts` (`bun run test:load`)
+   - `ARCHITECTURE.md` completo com diagramas Mermaid, justificativas, trade-offs e evolução para produção.

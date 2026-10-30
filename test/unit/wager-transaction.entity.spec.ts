@@ -139,4 +139,92 @@ describe("WagerTransaction Entity", () => {
 
     expect(rollbackOfWin.ledgerDirectionFor(winTx)).toBe(LedgerDirection.Debit);
   });
+
+  it("should detect idempotency payload hash mismatch", () => {
+    const tx = WagerTransaction.create({
+      id: "tx-idem-1",
+      providerId: "prov-a",
+      externalTransactionId: "ext-idem-1",
+      idempotencyKey: "prov-a:ext-idem-1",
+      payloadHash: "canonical-hash-original",
+      walletId: "w-1",
+      playerId: "p-1",
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Bet,
+      money,
+    });
+
+    expect(tx.matchesPayload("canonical-hash-original")).toBe(true);
+    expect(tx.matchesPayload("canonical-hash-divergent")).toBe(false);
+  });
+
+  it("should handle LOSS, WIN, and REFUND domain rules", () => {
+    const lossTx = WagerTransaction.create({
+      id: "tx-loss",
+      providerId: "prov-a",
+      externalTransactionId: "ext-loss",
+      idempotencyKey: "prov-a:ext-loss",
+      payloadHash: "hash-loss",
+      walletId: "w-1",
+      playerId: "p-1",
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Loss,
+      money: Money.zero("BRL"),
+    });
+
+    expect(lossTx.affectsBalance()).toBe(false);
+    expect(lossTx.requiresReference()).toBe(false);
+    expect(() => lossTx.ledgerDirectionFor()).toThrow();
+
+    const refundTx = WagerTransaction.create({
+      id: "tx-refund",
+      providerId: "prov-a",
+      externalTransactionId: "ext-refund",
+      idempotencyKey: "prov-a:ext-refund",
+      payloadHash: "hash-refund",
+      walletId: "w-1",
+      playerId: "p-1",
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Refund,
+      money,
+      referenceExternalTransactionId: "ext-bet",
+    });
+
+    expect(refundTx.affectsBalance()).toBe(true);
+    expect(refundTx.requiresReference()).toBe(true);
+    expect(refundTx.ledgerDirectionFor()).toBe(LedgerDirection.Credit);
+  });
+
+  it("should schedule exponential backoff retries for PENDING_REFERENCE and detect exhaustion", () => {
+    const refundTx = WagerTransaction.create({
+      id: "tx-pending-ref",
+      providerId: "prov-a",
+      externalTransactionId: "ext-pending-ref",
+      idempotencyKey: "prov-a:ext-pending-ref",
+      payloadHash: "hash-pending-ref",
+      walletId: "w-1",
+      playerId: "p-1",
+      roundId: "r-1",
+      gameId: "g-1",
+      kind: WagerTransactionKind.Refund,
+      money,
+      referenceExternalTransactionId: "missing-bet",
+    });
+
+    const t0 = new Date("2026-10-30T10:00:00.000Z");
+    refundTx.markPendingReference(t0, money);
+    expect(refundTx.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(refundTx.observedBalance?.amount).toBe("25.00");
+
+    for (let i = 0; i < WagerTransaction.MAX_REFERENCE_RETRY_ATTEMPTS; i++) {
+      expect(refundTx.hasExhaustedReferenceRetries()).toBe(false);
+      refundTx.scheduleReferenceRetry(t0);
+    }
+
+    expect(refundTx.retryAttempts).toBe(WagerTransaction.MAX_REFERENCE_RETRY_ATTEMPTS);
+    expect(refundTx.hasExhaustedReferenceRetries()).toBe(true);
+  });
 });

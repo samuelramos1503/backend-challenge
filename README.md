@@ -1,5 +1,51 @@
 # Technical Challenge — Distributed Wagering Processor
 
+> **Guia Rápido de Setup, Execução e Testes** | Para decisões técnicas detalhadas, trade-offs e modelagem, consulte o documento [**`ARCHITECTURE.md`**](./ARCHITECTURE.md).
+
+## 🚀 Como Executar o Projeto
+
+### 1. Pré-requisitos
+- **Bun 1.x** (`>= 1.1`)
+- **Docker** & **Docker Compose** (para PostgreSQL 16 e LocalStack SQS)
+
+### 2. Instalação e Infraestrutura Local
+```bash
+# 1. Instalar dependências
+bun install
+
+# 2. Copiar variáveis de ambiente (opcional, já possui defaults prontos para local)
+cp .env.example .env
+
+# 3. Subir PostgreSQL e LocalStack (SQS)
+docker compose up -d
+
+# 4. Executar migrations do banco (também aplicadas automaticamente no boot se AUTO_MIGRATE=true)
+bun run migration:up
+
+# 5. Iniciar a aplicação (porta 3000)
+bun run start
+```
+
+### 3. Comandos de Teste e Verificação
+```bash
+# Testes de unidade (Domínio: Money, Wallet, WagerTransaction, CanonicalJSON, Inbox/Outbox)
+bun run test:unit
+
+# Testes de integração (PostgreSQL real, constraints/triggers, LocalStack SQS, Inbox/Outbox, Reconciliação)
+bun run test:integration
+
+# Testes de concorrência (50x mesma aposta em paralelo, corrida 100 vs 2x80 BRL, >= 3 instâncias, crash before ACK, out-of-order REFUND)
+bun run test:concurrency
+
+# Teste de carga e benchmark (Throughput, p50/p95/p99, conflitos de lock, outbox lag e invariante contábil)
+bun run test:load
+
+# Checagem estrita de tipos TypeScript
+bun x tsc --noEmit
+```
+
+---
+
 ## Bem-vindo à Jungle Gaming 🦧
 
 A **Jungle Gaming** é uma software house especializada em iGaming — desenvolvemos plataformas de cassino online com tecnologia de ponta: NestJS, Bun, TanStack, DDD e arquitetura orientada a eventos. Somos apaixonados por engenharia de software e acreditamos que grandes produtos nascem de grandes times.

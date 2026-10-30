@@ -78,6 +78,9 @@ export class Migration20261029000001_initial_schema extends Migration {
         reference_external_transaction_id VARCHAR(150),
         reference_transaction_id UUID REFERENCES wager_transactions(id),
         failure_code VARCHAR(50),
+        observed_balance NUMERIC(18, 2) CHECK (observed_balance IS NULL OR observed_balance >= 0),
+        retry_attempts INT NOT NULL DEFAULT 0,
+        next_retry_at TIMESTAMPTZ,
         processed_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT uq_wager_tx_provider_external UNIQUE (provider_id, external_transaction_id),
@@ -85,8 +88,35 @@ export class Migration20261029000001_initial_schema extends Migration {
       );
 
       CREATE INDEX IF NOT EXISTS idx_wager_tx_wallet ON wager_transactions (wallet_id);
-      CREATE INDEX IF NOT EXISTS idx_wager_tx_status ON wager_transactions (status);
+      CREATE INDEX IF NOT EXISTS idx_wager_tx_status ON wager_transactions (status, next_retry_at);
       CREATE INDEX IF NOT EXISTS idx_wager_tx_provider_external ON wager_transactions (provider_id, external_transaction_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_wager_tx_single_processed_reversal
+      ON wager_transactions (reference_transaction_id)
+      WHERE status = 'PROCESSED' AND kind IN ('REFUND', 'ROLLBACK') AND reference_transaction_id IS NOT NULL;
+
+      CREATE OR REPLACE FUNCTION prevent_terminal_wager_tx_mutation()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'DELETE' THEN
+          RAISE EXCEPTION 'Wager transactions are audit records and cannot be deleted.';
+        END IF;
+        IF OLD.status IN ('PROCESSED', 'REJECTED', 'FAILED') AND NEW.status <> OLD.status THEN
+          RAISE EXCEPTION 'Cannot transition wager transaction % from terminal status % to %.', OLD.id, OLD.status, NEW.status;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS trg_prevent_terminal_wager_tx_update ON wager_transactions;
+      CREATE TRIGGER trg_prevent_terminal_wager_tx_update
+      BEFORE UPDATE ON wager_transactions
+      FOR EACH ROW EXECUTE FUNCTION prevent_terminal_wager_tx_mutation();
+
+      DROP TRIGGER IF EXISTS trg_prevent_wager_tx_delete ON wager_transactions;
+      CREATE TRIGGER trg_prevent_wager_tx_delete
+      BEFORE DELETE ON wager_transactions
+      FOR EACH ROW EXECUTE FUNCTION prevent_terminal_wager_tx_mutation();
     `);
 
     // 4. Inbox Messages table
@@ -121,6 +151,9 @@ export class Migration20261029000001_initial_schema extends Migration {
   async down(): Promise<void> {
     this.addSql(`DROP TABLE IF EXISTS outbox_messages;`);
     this.addSql(`DROP TABLE IF EXISTS inbox_messages;`);
+    this.addSql(`DROP TRIGGER IF EXISTS trg_prevent_wager_tx_delete ON wager_transactions;`);
+    this.addSql(`DROP TRIGGER IF EXISTS trg_prevent_terminal_wager_tx_update ON wager_transactions;`);
+    this.addSql(`DROP FUNCTION IF EXISTS prevent_terminal_wager_tx_mutation;`);
     this.addSql(`DROP TABLE IF EXISTS wager_transactions;`);
     this.addSql(`DROP TRIGGER IF EXISTS trg_prevent_ledger_delete ON wallet_ledger_entries;`);
     this.addSql(`DROP TRIGGER IF EXISTS trg_prevent_ledger_update ON wallet_ledger_entries;`);

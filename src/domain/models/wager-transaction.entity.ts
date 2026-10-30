@@ -54,9 +54,16 @@ export interface WagerTransactionState {
   referenceTransactionId?: string;
   failureCode?: FailureCode;
   processedAt?: Date;
+  observedBalance?: MoneyProps;
+  retryAttempts?: number;
+  nextRetryAt?: Date;
 }
 
 export class WagerTransaction {
+  public static readonly MAX_REFERENCE_RETRY_ATTEMPTS = 5;
+  private static readonly BASE_RETRY_DELAY_MS = 500;
+  private static readonly MAX_RETRY_DELAY_MS = 16000;
+
   private constructor(
     public readonly id: string,
     public readonly providerId: string,
@@ -75,6 +82,9 @@ export class WagerTransaction {
     private _referenceTransactionId?: string,
     private _failureCode?: FailureCode,
     private _processedAt?: Date,
+    private _observedBalance?: Money,
+    private _retryAttempts: number = 0,
+    private _nextRetryAt?: Date,
   ) {}
 
   public static create(props: CreateWagerTransactionProps): WagerTransaction {
@@ -122,6 +132,9 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.processedAt,
+      state.observedBalance ? Money.from(state.observedBalance) : undefined,
+      state.retryAttempts ?? 0,
+      state.nextRetryAt,
     );
   }
 
@@ -141,23 +154,65 @@ export class WagerTransaction {
     return this._processedAt;
   }
 
-  public markProcessed(referenceTransactionId: string | undefined, at: Date = new Date()): void {
+  public get observedBalance(): Money | undefined {
+    return this._observedBalance;
+  }
+
+  public get retryAttempts(): number {
+    return this._retryAttempts;
+  }
+
+  public get nextRetryAt(): Date | undefined {
+    return this._nextRetryAt;
+  }
+
+  public recordObservedBalance(balance: Money): void {
+    this._observedBalance = balance;
+  }
+
+  public markProcessed(referenceTransactionId: string | undefined, at: Date = new Date(), observedBalance?: Money): void {
     this.assertNotTerminal();
     this._status = WagerTransactionStatus.Processed;
     this._referenceTransactionId = referenceTransactionId;
     this._processedAt = at;
+    if (observedBalance) {
+      this._observedBalance = observedBalance;
+    }
   }
 
-  public markPendingReference(): void {
+  public markPendingReference(now: Date = new Date(), observedBalance?: Money): void {
     this.assertNotTerminal();
     this._status = WagerTransactionStatus.PendingReference;
+    if (observedBalance) {
+      this._observedBalance = observedBalance;
+    }
+    if (!this._nextRetryAt) {
+      this._nextRetryAt = new Date(now.getTime() + WagerTransaction.BASE_RETRY_DELAY_MS);
+    }
   }
 
-  public reject(code: FailureCode): void {
+  public scheduleReferenceRetry(now: Date = new Date()): void {
+    this.assertNotTerminal();
+    this._retryAttempts += 1;
+    const delay = Math.min(
+      WagerTransaction.BASE_RETRY_DELAY_MS * Math.pow(2, this._retryAttempts),
+      WagerTransaction.MAX_RETRY_DELAY_MS,
+    );
+    this._nextRetryAt = new Date(now.getTime() + delay);
+  }
+
+  public hasExhaustedReferenceRetries(maxAttempts: number = WagerTransaction.MAX_REFERENCE_RETRY_ATTEMPTS): boolean {
+    return this._retryAttempts >= maxAttempts;
+  }
+
+  public reject(code: FailureCode, observedBalance?: Money): void {
     this.assertNotTerminal();
     this._status = WagerTransactionStatus.Rejected;
     this._failureCode = code;
     this._processedAt = new Date();
+    if (observedBalance) {
+      this._observedBalance = observedBalance;
+    }
   }
 
   public fail(code: FailureCode): void {

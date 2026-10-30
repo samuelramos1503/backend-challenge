@@ -17,11 +17,12 @@ describe("Money Value Object", () => {
     expect(() => Money.from({ amount: "100,50", currency: "BRL" })).toThrow(InvalidAmountError);
   });
 
-  it("should reject invalid inputs like NaN, Infinity, scientific notation, empty strings", () => {
+  it("should reject invalid inputs like NaN, Infinity, scientific notation, empty strings, and negative inputs", () => {
     expect(() => Money.from({ amount: "NaN", currency: "BRL" })).toThrow(InvalidAmountError);
     expect(() => Money.from({ amount: "Infinity", currency: "BRL" })).toThrow(InvalidAmountError);
     expect(() => Money.from({ amount: "1e5", currency: "BRL" })).toThrow(InvalidAmountError);
     expect(() => Money.from({ amount: "", currency: "BRL" })).toThrow(InvalidAmountError);
+    expect(() => Money.from({ amount: "-10.00", currency: "BRL" })).toThrow(InvalidAmountError);
   });
 
   it("should perform addition and subtraction without floating point errors", () => {

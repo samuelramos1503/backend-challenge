@@ -1,3 +1,4 @@
+import Decimal from "decimal.js";
 import { EntityManager } from "@mikro-orm/postgresql";
 import { Money } from "../../../domain/models/money.vo";
 import {
@@ -85,11 +86,11 @@ export class MikroOrmWalletLedgerRepository implements IWalletLedgerRepository {
 
     const row = res[0] || { total_credit: "0.00", total_debit: "0.00", total_count: "0" };
     const totalCredit = Money.from({
-      amount: parseFloat(row.total_credit || "0").toFixed(2),
+      amount: new Decimal(row.total_credit || "0").toFixed(2),
       currency,
     });
     const totalDebit = Money.from({
-      amount: parseFloat(row.total_debit || "0").toFixed(2),
+      amount: new Decimal(row.total_debit || "0").toFixed(2),
       currency,
     });
     const calculatedBalance = totalCredit.subtract(totalDebit);
